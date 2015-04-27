@@ -1,0 +1,242 @@
+package nlp.processing;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+
+import nlp.model.Sentence;
+import nlp.model.SentenceData;
+import nlp.processing.features.MatlabSparse;
+import nlp.processing.features.Vector;
+
+public class NgramGenerator {
+	private ArrayList<Sentence> corpus;
+	private Sentence[] idToSentence;
+	private int[] idToOffset;
+
+	int totalNgrams; //计数器,即总词数
+	private ArrayList<Integer> randomIndices;
+	int currentNgramIndex = 0;
+	private boolean pickAtRandom;
+
+	public int getTotalNoOfNgrams() {
+		return totalNgrams;
+	}
+
+	public NgramGenerator(SentenceData data, boolean pickAtRandom) {
+		this.corpus = data.getCorpus();
+		initialize();
+		this.pickAtRandom = pickAtRandom;
+	}
+
+	public NgramGenerator(SentenceData data) {
+		this(data, true);
+	}
+
+	public String[] getCurrentTokenNgram(int n) {
+		return getNgram(getCurrentIndex(), n, false);
+	}
+
+	public String[] getCurrentTagNgram(int n) {
+		return getNgram(getCurrentIndex(), n, true);
+	}
+
+	public String getCurrentToken() {
+		int offset = idToOffset[getCurrentIndex()];
+		Sentence sentence = idToSentence[getCurrentIndex()];
+		return sentence.getRawToken(offset);
+	}
+	//以当前文章位置为中心,取出长度为n的串.首先将文章位置转化为句子内部位置
+	public String[] getRawTokenNgram(int n) {
+		int offset = idToOffset[getCurrentIndex()];
+		Sentence sentence = idToSentence[getCurrentIndex()];
+		return getNGram(offset, sentence.getRawTokens(), n);
+	}
+
+	public String getCurrentTag() {
+		return getCurrentTagNgram(1)[0];
+	}
+
+	public String getCurrentTokenNgramAsString(int n) {
+		return arrayToString(getCurrentTokenNgram(n));
+	}
+
+	public int getTokenOffset() {
+		return idToOffset[getCurrentIndex()];
+	}
+
+	public void advance() {
+		currentNgramIndex++;
+	}
+
+	private int getCurrentIndex() {
+		if (pickAtRandom) {
+			return randomIndices.get(currentNgramIndex);
+		} else {
+			return currentNgramIndex;
+		}
+	}
+
+	private void initialize() {
+		for (Sentence sentence : corpus) {
+			totalNgrams += sentence.size();
+		}
+		randomIndices = createPermutation(totalNgrams);
+		loadTable();
+	}
+
+	private ArrayList<Integer> createPermutation(int size) {
+		ArrayList<Integer> indices = new ArrayList<Integer>();
+		for (int i = 0; i < size; i++) {
+			indices.add(i);
+		}
+		Collections.shuffle(indices);
+		return indices;
+	}
+	//在词index所在的句子中以词index为中心,取出长度为n的tag序列或者token序列
+	public String[] getNgram(int index, int n, boolean tags) {
+		int offset = idToOffset[index];
+		Sentence sentence = idToSentence[index];
+		if (tags) {
+			return getNGram(offset, sentence.getTags(), n);
+		} else {
+			return getNGram(offset, sentence.getTokens(), n);
+		}
+	}
+	//确定每个词的句子偏移量和其所在的句子
+	private void loadTable() {
+		int index = 0;
+		idToOffset = new int[totalNgrams];
+		idToSentence = new Sentence[totalNgrams];
+
+		for (Sentence sentence : corpus) {
+			for (int offset = 0; offset < sentence.size(); offset++) {
+				idToSentence[index] = sentence;//词的编号,映射其所在的句子
+				idToOffset[index] = offset;//词的编号,对应其在句子中的offset
+				index++;//index是词的编号
+			}
+		}
+	}
+	//在sentence中以pos为中心,取出长度为n的窗口的词序列
+	private String[] getNGram(int pos, List<String> sentence, int n) {
+		String[] nGram = new String[n];
+		if (sentence.size() == 0)
+			return nGram;
+		for (int i = pos - n / 2; i <= pos + n / 2; i++) {
+			//if the current word is the first word in a sentence, then, its left context words should all be boundary
+			nGram[i - pos + n / 2] = getItem(i, sentence);//i是sentence内部的位置
+		}
+		return nGram;
+	}
+
+	private String getItem(int i, List<String> sentence) {
+		if ((i < 0) || (i >= sentence.size())) {
+			return Sentence.BOUNDARY;
+		} else {
+			return sentence.get(i);
+		}
+	}
+
+	private String arrayToString(String[] tokens) {
+		StringBuffer result = new StringBuffer();
+		for (String token : tokens) {
+			if (result.length() > 0) {
+				result.append("|");
+			}
+			result.append(token);
+		}
+		return result.toString();
+	}
+	//noOfSamples即是matlab里面的no_of_ngrams=1000
+	public MatlabSparse getFeatures(int noOfSamples, Features[] featGens, int windowSize) {
+		//noOfVectors=featGens.length*windowsize=3*5=15,即每个词的windows所包含词的向量数量总和
+		int noOfVectors = Features.getNoOfGeneratedVectors(featGens, windowSize);
+		//上面已经计算出每个词的上下文一共的向量总数,下面在结合需要考虑的noofsamples来设计一个空间装东西
+		MatlabSparse features = new MatlabSparse(noOfVectors, noOfSamples * 10);
+		//知道了token[],tag[]和ngrams[]的长度:noofsamples
+		features.initializeOtherFields(noOfSamples);
+
+		ProgressBar progress = new ProgressBar(noOfSamples);
+		for (int i = 0; i < noOfSamples; i++) 
+		{
+			//return a token sequence with the length of windowsize
+			String[] tokens = getCurrentTokenNgram(windowSize);
+			String[] rawTokens = getRawTokenNgram(windowSize);
+			features.tags[i] = getCurrentTag();
+			features.tokens[i] = getCurrentToken();
+			features.ngrams[i] = getCurrentTokenNgramAsString(windowSize);
+
+			progress.showProgress(i + 1);//??????????????
+			//每个词i享有一个向量计数器vectorindex,大约为5*4=20下即清零
+			int vectorIndex = 0;
+			for (int j = 0; j < windowSize; j++) {//每一个上下文词
+				//下面的feat遍历featGens,而featGens的初始化又来自于matlab里面Tagger()的函数instance.wordFeatures(i) = eval(wordFeatures{i}.type);
+				//由于每一个type为一个字符串,加上eval命令后就是一个执行了的函数,而返回值wordFeatures(i)则代表每个类的实例,所以分别是distfeature, suffix 和shape
+
+				for (Features feat : featGens) {  
+					//move from the left end of the window to the right end of the window
+					//下面的position应该是指在句子中的位置,把相对偏移量转化为绝对偏移量
+					int position = getTokenOffset() + (j - windowSize / 2);
+					//当这个特征需要考虑,或者就是当前词((j - windowSize / 2) == 0))
+					if (feat.alwaysActive() || (j - windowSize / 2) == 0) {
+						
+						//feat.getFeaturevector returns a vector[],例如distfeature返回是left vector和right vector两个,而其实suffix得到的是一个向量,而shape得到的还是只有一个元素的向量
+						for (Vector contexts : feat.getFeatureVector(tokens[j], rawTokens[j], position)) 
+						{
+						
+							double sumTmp=0.0;
+							for (int k = 0; k < contexts.length(); k++) {
+								//下面,i为原文中词的位置, contexts.index[k]+1是词i的上下文windows内的k词位置,values为上下文中k词的特征值values[k]
+								features.indicesX[vectorIndex].add(i + 1);
+								features.indicesY[vectorIndex].add(contexts.indices[k] + 1); //indices里面装的是featureNameToId 也就是feature编号
+								//System.out.printf("featureIndes:%d\n", contexts.indices[k] + 1);
+								features.values[vectorIndex].add(contexts.values[k]);
+								if(contexts.values[k]==0.0)
+								{
+									sumTmp+=Math.pow(contexts.values[k], 2);
+								}
+								else{
+									sumTmp+=Math.pow(1+Math.log(contexts.values[k]), 2);
+								}
+								
+							}
+							//store the sum value after comupte its sqrt
+							features.sumPerVector[vectorIndex].add(Math.pow(sumTmp, 1.0/2));
+							//一个token j享有多个feature vector(准确说应该是4个),每一个vector享有一个index
+							vectorIndex++;
+
+						}
+					}
+					
+				}
+			}
+			//以当前i位置为中心,取长度为3的ngrams,如果第三个token是边界,那么就标记一下,它的位置恰好是i+1
+			if (!pickAtRandom && getCurrentTokenNgram(3)[2].equals(Sentence.BOUNDARY)) {
+				features.sentenceBoundaries.add(i + 1);
+			}
+			advance();//currentNgramIndex = 0;当前位置往后移动一个,保持和i的同步
+		}
+
+		addFeatureNames(features, featGens, windowSize);
+		features.compact();
+		return features;
+	}
+	//下面的featureNames并不依赖于数据,而是由最开始的featGens决定的.所以distFeature是全域的,而suffix和signatures是trainingdata上面获取的.
+	//无论是trainingdata还是testdata,他们的特征名称都一样.
+	private void addFeatureNames(MatlabSparse features, Features[] featGens, int windowSize) {
+		int index = 0;
+		for (int j = 0; j < windowSize; j++) {//每一个context token
+			String pos = Integer.toString(j - windowSize / 2);
+			for (Features feat : featGens) {//每一种特征类型
+				if (feat.alwaysActive() || j - windowSize / 2 == 0) {
+					//public String[][] getFeatureNames(String pos) 返回的是二维string
+					for (String[] v : feat.getFeatureNames(pos)) {//获得的若干特征名称,注意均是string数组
+						//注意public String[][] featureNames;,是一个二维数组
+						features.featureNames[index] = v;
+						index++;
+					}
+				}
+			}
+		}
+	}
+}

@@ -1,0 +1,205 @@
+package nlp.processing;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+
+import nlp.model.Sentence;
+import nlp.model.SentenceData;
+import nlp.processing.features.MatlabSparse;
+import nlp.processing.features.Vector;
+
+public class NgramGenerator {
+	private ArrayList<Sentence> corpus;
+	private Sentence[] idToSentence;
+	private int[] idToOffset;
+
+	int totalNgrams;
+	private ArrayList<Integer> randomIndices;
+	int currentNgramIndex = 0;
+	private boolean pickAtRandom;
+
+	public int getTotalNoOfNgrams() {
+		return totalNgrams;
+	}
+
+	public NgramGenerator(SentenceData data, boolean pickAtRandom) {
+		this.corpus = data.getCorpus();
+		initialize();
+		this.pickAtRandom = pickAtRandom;
+	}
+
+	public NgramGenerator(SentenceData data) {
+		this(data, true);
+	}
+
+	public String[] getCurrentTokenNgram(int n) {
+		return getNgram(getCurrentIndex(), n, false);
+	}
+
+	public String[] getCurrentTagNgram(int n) {
+		return getNgram(getCurrentIndex(), n, true);
+	}
+
+	public String getCurrentToken() {
+		int offset = idToOffset[getCurrentIndex()];
+		Sentence sentence = idToSentence[getCurrentIndex()];
+		return sentence.getRawToken(offset);
+	}
+
+	public String[] getRawTokenNgram(int n) {
+		int offset = idToOffset[getCurrentIndex()];
+		Sentence sentence = idToSentence[getCurrentIndex()];
+		return getNGram(offset, sentence.getRawTokens(), n);
+	}
+
+	public String getCurrentTag() {
+		return getCurrentTagNgram(1)[0];
+	}
+
+	public String getCurrentTokenNgramAsString(int n) {
+		return arrayToString(getCurrentTokenNgram(n));
+	}
+
+	public int getTokenOffset() {
+		return idToOffset[getCurrentIndex()];
+	}
+
+	public void advance() {
+		currentNgramIndex++;
+	}
+
+	private int getCurrentIndex() {
+		if (pickAtRandom) {
+			return randomIndices.get(currentNgramIndex);
+		} else {
+			return currentNgramIndex;
+		}
+	}
+
+	private void initialize() {
+		for (Sentence sentence : corpus) {
+			totalNgrams += sentence.size();
+		}
+		randomIndices = createPermutation(totalNgrams);
+		loadTable();
+	}
+
+	private ArrayList<Integer> createPermutation(int size) {
+		ArrayList<Integer> indices = new ArrayList<Integer>();
+		for (int i = 0; i < size; i++) {
+			indices.add(i);
+		}
+		Collections.shuffle(indices);
+		return indices;
+	}
+
+	public String[] getNgram(int index, int n, boolean tags) {
+		int offset = idToOffset[index];
+		Sentence sentence = idToSentence[index];
+		if (tags) {
+			return getNGram(offset, sentence.getTags(), n);
+		} else {
+			return getNGram(offset, sentence.getTokens(), n);
+		}
+	}
+
+	private void loadTable() {
+		int index = 0;
+		idToOffset = new int[totalNgrams];
+		idToSentence = new Sentence[totalNgrams];
+
+		for (Sentence sentence : corpus) {
+			for (int offset = 0; offset < sentence.size(); offset++) {
+				idToSentence[index] = sentence;
+				idToOffset[index] = offset;
+				index++;
+			}
+		}
+	}
+
+	private String[] getNGram(int pos, List<String> sentence, int n) {
+		String[] nGram = new String[n];
+		if (sentence.size() == 0)
+			return nGram;
+		for (int i = pos - n / 2; i <= pos + n / 2; i++) {
+			nGram[i - pos + n / 2] = getItem(i, sentence);
+		}
+		return nGram;
+	}
+
+	private String getItem(int i, List<String> sentence) {
+		if ((i < 0) || (i >= sentence.size())) {
+			return Sentence.BOUNDARY;
+		} else {
+			return sentence.get(i);
+		}
+	}
+
+	private String arrayToString(String[] tokens) {
+		StringBuffer result = new StringBuffer();
+		for (String token : tokens) {
+			if (result.length() > 0) {
+				result.append("|");
+			}
+			result.append(token);
+		}
+		return result.toString();
+	}
+
+	public MatlabSparse getFeatures(int noOfSamples, Features[] featGens, int windowSize) {
+		int noOfVectors = Features.getNoOfGeneratedVectors(featGens, windowSize);
+		MatlabSparse features = new MatlabSparse(noOfVectors, noOfSamples * 10);
+		features.initializeOtherFields(noOfSamples);
+
+		ProgressBar progress = new ProgressBar(noOfSamples);
+		for (int i = 0; i < noOfSamples; i++) {
+			String[] tokens = getCurrentTokenNgram(windowSize);
+			String[] rawTokens = getRawTokenNgram(windowSize);
+			features.tags[i] = getCurrentTag();
+			features.tokens[i] = getCurrentToken();
+			features.ngrams[i] = getCurrentTokenNgramAsString(windowSize);
+
+			progress.showProgress(i + 1);
+			int vectorIndex = 0;
+			for (int j = 0; j < windowSize; j++) {
+				for (Features feat : featGens) {
+					int position = getTokenOffset() + (j - windowSize / 2);
+					if (feat.alwaysActive() || (j - windowSize / 2) == 0) {
+						for (Vector contexts : feat.getFeatureVector(tokens[j], rawTokens[j], position)) {
+							for (int k = 0; k < contexts.length(); k++) {
+								features.indicesX[vectorIndex].add(i + 1);
+								features.indicesY[vectorIndex].add(contexts.indices[k] + 1);
+								features.values[vectorIndex].add(contexts.values[k]);
+							}
+							vectorIndex++;
+						}
+					}
+				}
+			}
+			if (!pickAtRandom && getCurrentTokenNgram(3)[2].equals(Sentence.BOUNDARY)) {
+				features.sentenceBoundaries.add(i + 1);
+			}
+			advance();
+		}
+
+		addFeatureNames(features, featGens, windowSize);
+		features.compact();
+		return features;
+	}
+
+	private void addFeatureNames(MatlabSparse features, Features[] featGens, int windowSize) {
+		int index = 0;
+		for (int j = 0; j < windowSize; j++) {
+			String pos = Integer.toString(j - windowSize / 2);
+			for (Features feat : featGens) {
+				if (feat.alwaysActive() || j - windowSize / 2 == 0) {
+					for (String[] v : feat.getFeatureNames(pos)) {
+						features.featureNames[index] = v;
+						index++;
+					}
+				}
+			}
+		}
+	}
+}

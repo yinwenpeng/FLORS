@@ -1,0 +1,244 @@
+classdef Tagger < handle
+    properties (SetAccess = private)
+        parser
+        map
+        unlabeledData
+        trainingData
+        wordFeatures
+    end
+    
+    methods
+        % Creates a new tagger from a file
+        function instance = Tagger(unlabeledData, trainingData, wordFeatures)
+            instance.unlabeledData = unlabeledData;
+            instance.trainingData = trainingData;
+            
+            % Instantiate classes for each type of feature
+            instance.wordFeatures = javaArray ('nlp.processing.Features', length(wordFeatures));
+            for i=1:length(wordFeatures)
+                %eval() makes the paraneter string to be s executive
+                %command, so instance.wordFeatures(i) contains the feature
+                %vector itself
+                instance.wordFeatures(i) = eval(wordFeatures{i}.type);
+                instance.wordFeatures(i).setAlwaysActive(wordFeatures{i}.alwaysActive);
+            end
+        end
+        
+        % Gets the feature vectors and labels of the training set
+        % n means the width of window, i.e., 5
+        function [features, labels, tokens] = getTrainingSet(instance, n, no_of_ngrams)
+            %in matlab, every java class has an instance as return, it can
+            %call the functions of that class
+            gramGen = nlp.processing.NgramGenerator(instance.trainingData, false);
+            if (strcmp('all',no_of_ngrams)) %1 for equal, and 0 for not
+                no_of_ngrams = gramGen.getTotalNoOfNgrams();
+            end
+            % the following instance.getfeature directlz calls the
+            % getfeature function of ngramgenerator in java code
+            [rawFeatures, features] = instance.getFeatures(gramGen, n, no_of_ngrams);
+            %ids has no duplicate values
+            instance.generateTagIds(rawFeatures.tags);
+            %labels has the some dimension with tags, has duplicate values
+            labels = instance.mapTagsToLabels(rawFeatures.tags);
+            disp(labels);
+            %following tokens is actuallz ngrams, please refer to the
+            %printFeatureVector function
+            tokens = rawFeatures.ngrams;
+        end
+        
+        % Gets the feature vecotrs and labels of the test set
+        function [features, labels, tokens, unknownTokens, sBoundaries] = getTestSet(instance, n, no_of_ngrams, testData)
+            gramGen = nlp.processing.NgramGenerator(testData, false);
+            if (strcmp('all',no_of_ngrams))
+                no_of_ngrams = gramGen.getTotalNoOfNgrams();
+            end
+            [rawFeatures, features] = instance.getFeatures(gramGen, n, no_of_ngrams);
+            
+            labels = instance.mapTagsToLabels(rawFeatures.tags);
+            
+            %disp(rawFeatures.tags(821));
+            %disp(labels(821));
+            
+            tokens = rawFeatures.tokens;
+            sBoundaries = rawFeatures.sentenceBoundaries.elements();
+            %note that "unknownWords" below is just a set
+            unknownWords = testData.getUnknownWords(instance.trainingData);
+            %ismember turns an array the same size as A, containing 1 (true) where 
+            %the elements of A are found in B. Elsewhere, it returns 0 (false)
+            unknownTokens = ismember(cell(tokens), cell(unknownWords.toArray()));
+        end
+         
+        % Gets the feature vectors given a nGram drawing instance
+        function [rawFeatures, features] = getFeatures(instance, gramGen, n, no_of_ngrams)
+            %its the ngramgenerator's getFeatures(int noOfSamples, Features[] featGens, int windowSize)
+            rawFeatures = gramGen.getFeatures(no_of_ngrams,instance.wordFeatures, n);
+            %feature.values, feature.names
+            features = Tagger.convertToMatlabMatrix(rawFeatures);
+            features = Tagger.consolidateFeatures(features);
+        end
+        
+        % Create a mapping between internal integer labels and POS tags
+        function [] = generateTagIds(instance, rawTags)
+            tags = cell(rawTags);
+            allTags = unique(tags);
+            %tag froms 1
+            instance.map.tagToId = containers.Map(allTags,1:length(allTags));
+            instance.map.idToTag = containers.Map(1:length(allTags),allTags);
+        end
+  
+        function [map] = getLabelsToTagMap(instance)
+            %idtotag means int label----pos tag
+            map=instance.map.idToTag;
+        end
+    end
+    
+    methods (Access = private)
+        % Maps a text tag to an internal integer label (for classification)
+        function [labels] = mapTagsToLabels(instance,tags)
+            tags=cell(tags);
+            %the following labels is a column with height of length(tags)
+            labels = zeros(length(tags),1);
+            map=instance.map.tagToId;
+            for i=1:length(tags)
+                if map.isKey(tags{i})
+                    labels(i,1)=map(tags{i});
+                else
+                    labels(i,1)=max(cell2mat(map.values)) + 1;
+                end
+            end
+        end
+    end
+    methods (Static)
+        % Normalizes each row of a matrix to have length 1
+        function [ M ] = normRows( M )
+            M = spdiags(spfun(@(x) 1./x,sqrt(sum(M.^2,2))),0,size(M,1), size(M,1))*M;
+        end
+        
+         % Applies TF-Scaling to each non-zero entry
+        function [ M ] = logScale( M )
+            M = spfun(@(x) log(x) + 1, M);
+        end
+        
+        % Converts the Java feature data to a sparse Matlab matrix
+        function [features] = convertToMatlabMatrix(featuresTmp)
+            %featureTmp.ngram is a string[], each string store the ngrams
+            %of current sample, so the length is the number of sample
+            no_of_ngrams = length(featuresTmp.ngrams);
+            %DoubleArrayList[] values; it is a matrix, the length is the
+            %longest dimension
+            for j=1:length(featuresTmp.values)
+                %convert to indicesX list by list
+                indicesX = double(featuresTmp.indicesX(j).elements());
+                indicesY = double(featuresTmp.indicesY(j).elements());
+                %features.values{j} is a generated matrix with
+                %dimensionalitz of no_0f_ngrams*length(featuresTmp.featureNames(j)
+                features.values{j}= sparse(indicesX, indicesY,...
+                    double(featuresTmp.values(j).elements()),...
+                    no_of_ngrams, length(featuresTmp.featureNames(j)));
+                %how much featureNames in featureTmp? 5*4=20
+                features.names{j} =  featuresTmp.featureNames(j);
+            end
+        end
+        
+        % Concatenates all single feature vectors to one large vector.
+        % Logscales and normalizes each single feature vector before
+        % appending it.
+        function [features] = consolidateFeatures(singleFeatures)
+            features.values = [];  %empty vector
+            features.names = {};   %empty cell
+            %length(singleFeatures.values) is 5*4=20
+            for i=1:length(singleFeatures.values)
+                % add the singleFeatures.values{i} to the end of the vector
+                % of feature.values, note that
+                % Tagger.logScale(singleFeatures.values{i} is a matlab
+                % sparse matrix, not a vector. the final features.values is
+                % a big matrix with dimensionality of
+                % no_of_ngrams*(dist1+dist2+suffix+shape)*5
+                features.values = [features.values Tagger.normRows(Tagger.logScale(singleFeatures.values{i}))];
+                features.names = [features.names singleFeatures.names{i}];
+            end
+        end
+        
+        % Prints out a feature vector for debugging
+        %Tagger.printFeatureVector(train_features,train_tokens,1);
+        function [] = printFeatureVector(features, tokens, index)
+            %find(X)  returns linear indices for the nonzero entries of X.
+            indices =  find(features.values(index,:));
+            fprintf('Feature\tValue\t\n');
+            %indices is a set, nonyerovalue is an element
+            for nonzeroValue=indices
+                %full() produce a full matrix from a sparse matrix
+                fprintf('%s\t%.4f\n',char(features.names(nonzeroValue)),full(features.values(index,nonzeroValue)));
+            end
+            % why only print the ngram of the first word
+            fprintf('Input n-gram: %s\n',char(tokens(index)));
+        end
+        
+        % Returns the percentage of tokens that have the majority tag
+        function [acc] = majBaseline(labels)
+            acc = sum(labels == mode(labels))/length(labels);
+        end
+        
+        % Maps a integer label (used for classification) to a POS tag name
+        % (used for evaluation).   every posTag name has a int index
+        function [tags] = mapLabelsToTags(map,labels)
+            tags = cell(length(labels),1);
+            
+            for i=1:length(labels)
+                if map.isKey(labels(i))
+                    tags{i,1}=map(labels(i));
+                else
+                    tags{i,1} = 'UNKNOWN';
+                end
+            end
+        end
+        
+        % Creates a summary of all errors and writes the results out to a
+        % file
+        function [] = printErrors(map, labelsGold, labelsPredicted, oovIndices, tokens, file, sentenceBoundaries)
+            % & orperation between two matrixes
+            errorsOn = (labelsGold~= labelsPredicted) & oovIndices;
+            
+            fprintf('gold tag\terrors\ttotal\trel. errors\tclass recall\tclass precision\n');
+            %creates a frequency table of data in labelsGold(errorsOn)
+            % sortrows the tabulate matrix with the second column desceding
+            errorStatistics = sortrows(tabulate(labelsGold(errorsOn)),-2);
+            errorNames = Tagger.mapLabelsToTags(map, errorStatistics(:,1));
+            for i=1:length(errorStatistics)
+                classSize = sum(labelsGold(oovIndices) == errorStatistics(i,1));
+                taggedAs = sum(labelsPredicted(oovIndices) == errorStatistics(i,1));
+                taggedAsCorrectly = sum((labelsPredicted(oovIndices) == errorStatistics(i,1)) & (labelsPredicted(oovIndices) == labelsGold(oovIndices)));
+                precision = taggedAsCorrectly*100/taggedAs;
+                fprintf('%s\t%d\t%d\t%.1f%%\t%.1f%%\t%.1f%%\n',errorNames{i},errorStatistics(i,2),classSize,errorStatistics(i,2)*100/sum(oovIndices), (1-errorStatistics(i,2)/classSize)*100, precision);
+            end
+            fprintf('\n');
+            % the file to write
+            fid = fopen(file,'w');
+            gold = Tagger.mapLabelsToTags(map, labelsGold);
+            predicted = Tagger.mapLabelsToTags(map, labelsPredicted);
+            % Format: <Token> <Predicted> <Gold> <Is unknown>
+            for i=1:length(tokens)
+                if oovIndices(i)
+                    unk = 'U';
+                else
+                    unk = '';
+                end
+                fprintf(fid, '%s\t%s\t%s\t%s\n', char(tokens(i)), predicted{i}, gold{i}, unk);
+                if ismember(i, sentenceBoundaries)
+                    fprintf(fid, '\n');
+                end
+            end
+            fclose(fid);
+        end
+        
+        function [acc, counts] = unknownWordAccuracy(labelsGold, labelsPredicted, oovIndices)
+            counts.correct = sum(labelsGold(oovIndices)==labelsPredicted(oovIndices));
+            counts.total = sum(oovIndices);
+            acc = counts.correct/counts.total;
+        end
+    end
+    
+    
+    
+    
+end % classdef

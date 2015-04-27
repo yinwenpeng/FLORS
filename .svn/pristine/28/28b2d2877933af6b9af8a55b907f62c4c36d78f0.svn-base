@@ -1,0 +1,56 @@
+package nlp.stats;
+
+import java.util.ArrayList;
+
+import nlp.model.Sentence;
+import no.uib.cipr.matrix.sparse.FlexCompRowMatrix;
+import no.uib.cipr.matrix.sparse.SparseVector;
+
+public class BigramFreqs {
+	FlexCompRowMatrix leftContexts;
+	FlexCompRowMatrix rightContexts;
+	protected UnigramFreqs unigrams;
+	
+	
+	public BigramFreqs(UnigramFreqs unigrams) {
+		this.unigrams = unigrams;
+		
+		leftContexts = new FlexCompRowMatrix(UnigramFreqs.MAX_WORDS, UnigramFreqs.MAX_WORDS);
+		rightContexts = new FlexCompRowMatrix(UnigramFreqs.MAX_WORDS, UnigramFreqs.MAX_WORDS);
+	}
+
+	public void addCorpus(ArrayList<Sentence> corpus) {
+		for (Sentence sentence : corpus) {
+			if (sentence.size() > 0) {
+				addBigramsFromSentence(sentence);
+			}
+		}
+	}
+
+	protected void addBigramsFromSentence(Sentence sentence) {
+		for (int i = -1; i <= sentence.size(); i++) {
+			int token = unigrams.translate(sentence.getTokenSafe(i));
+		
+			if (i > -1) {
+				incrementTable(leftContexts, token, unigrams.translate(sentence.getTokenSafe(i - 1)));
+			}
+			if (i < sentence.size()) {
+				incrementTable(rightContexts, token, unigrams.translate(sentence.getTokenSafe(i + 1)));
+			}
+		}
+	}
+
+	private void incrementTable(FlexCompRowMatrix table, int token, int context) {
+		table.add(token, context, 1.0d);
+	}
+
+	public SparseVector getLeftFrequencies(String token) {
+		int tokenId = unigrams.translate(token);
+		return leftContexts.getRow(tokenId);
+	}
+
+	public SparseVector getRightFrequencies(String token) {
+		int tokenId = unigrams.translate(token);
+		return rightContexts.getRow(tokenId);
+	}
+}

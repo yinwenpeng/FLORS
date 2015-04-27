@@ -1,0 +1,55 @@
+function [] = testTagger(targetDomain)
+javaaddpath('lfep.jar');
+import nlp.*;
+if ~exist('results', 'dir')
+    mkdir('results');
+end
+
+loadSettings;
+
+trainingData = nlp.model.LabeledDataset();
+trainingData.parse(trainingFile);
+
+testData = nlp.model.LabeledDataset();
+testData.parse(testFile);
+
+targetDomainData = nlp.model.ThinDataset();
+targetDomainData.parse(lTargetData, ulTargetData);
+
+sourceDomainData = nlp.model.ThinDataset();
+sourceDomainData.parse([], ulSourceData);
+
+unlabeledData = nlp.model.UnlabeledDataset();
+unlabeledData.add(trainingData);
+unlabeledData.add(testData);
+unlabeledData.add(targetDomainData);
+unlabeledData.add(sourceDomainData);
+
+myTagger = Tagger(unlabeledData, trainingData, wordFeatures);   
+
+[train_features, train_labels, train_tokens] = myTagger.getTrainingSet(ngram_size, no_of_ngrams);
+[test_features, test_labels, test_tokens, test_oovIndices, test_sBoundaries] = myTagger.getTestSet(ngram_size, no_of_ngrams_test, testData);  
+Tagger.printFeatureVector(train_features,train_tokens,1);
+
+tagMap = myTagger.getLabelsToTagMap();
+clear myTagger testData targetDomainData sourceDomainData unlabeledData trainingData;
+if saveToFile
+     save(sprintf('results/%s',targetDomain),'train_*','test_*','tagMap');
+end
+
+fprintf('No. of training examples: %d\n', size(train_features.values,1));
+display('Training SVM...');
+model = train(train_labels,train_features.values,'-q -B 1');
+save(sprintf('results/%s.model',targetDomain),'model','tagMap');
+[~,accuracy_train] = predict(train_labels, train_features.values ,model, '-q');
+[predicted_labels,accuracy_test] = predict(test_labels,test_features.values,model,'-q');
+
+[oovAcc,oovCounts] = Tagger.unknownWordAccuracy(test_labels, predicted_labels,test_oovIndices);
+fprintf('Acc. on training set (all words): %f\n', accuracy_train(1));
+fprintf('Acc. on test set (all words): %f\n', accuracy_test(1));
+fprintf('Acc. on test set (unknown words): %f (%d / %d)\n', oovAcc*100, oovCounts.correct, oovCounts.total);
+fprintf('Unknown word baseline: %f\n\n', Tagger.majBaseline(test_labels(test_oovIndices)*100));
+
+Tagger.printErrors(tagMap, test_labels, predicted_labels,test_oovIndices, test_tokens, sprintf('results/%s.tagged',targetDomain),test_sBoundaries);
+
+end

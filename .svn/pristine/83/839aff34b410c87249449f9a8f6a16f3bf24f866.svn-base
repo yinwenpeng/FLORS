@@ -1,0 +1,148 @@
+package nlp.stats;
+
+import java.io.BufferedWriter;
+import java.io.FileWriter;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.Set;
+
+import nlp.data.Pair;
+import nlp.data.Parser;
+import nlp.model.Sentence;
+
+public class UnigramFreqs {
+	LinkedHashMap<String, Integer> wordToId = new LinkedHashMap<String, Integer>();
+	HashMap<Integer, String> idToWord = new HashMap<Integer, String>();
+	public static final int MAX_WORDS = 1000000;
+	int[] frequencyTable = new int[MAX_WORDS];
+	
+	public UnigramFreqs(ArrayList<Sentence> corpus) {
+		this();
+		addCorpus(corpus);
+	}
+
+	public UnigramFreqs() {
+		createIdentifier(Sentence.BOUNDARY);
+	}
+
+	public Set<String> getVocabulary() {
+		return wordToId.keySet();
+	}
+	
+	public String[] getVocabularyAsArray() {
+		return getVocabulary().toArray(new String[getVocabulary().size()]);
+	}
+
+	public void addCorpus(ArrayList<Sentence> corpus) {
+		for (Sentence sentence : corpus) {
+			for (String token : sentence.getTokens()) {
+				createIdentifier(token);
+				incrementTable(token);
+			}
+			// Count if there were two <BOUNDARY> tokens on each side of the sentence
+			incrementTable(Sentence.BOUNDARY);
+			incrementTable(Sentence.BOUNDARY);
+		}
+	}
+
+	private void createIdentifier(String word) {
+		if (!wordToId.containsKey(word)) {
+			int id = wordToId.size();
+			wordToId.put(word, id);
+			idToWord.put(id, word);
+		}
+	}
+
+	public int translate(String word) {
+		return wordToId.get(word);
+	}
+
+	public String translate(int id) {
+		return idToWord.get(id);
+	}
+
+	private void incrementTable(String word) {
+		frequencyTable[translate(word)]++;
+	}
+
+	public int getFrequency(String word) {
+		if (wordToId.containsKey(word)) {
+			return frequencyTable[translate(word)];
+		} else {
+			return 0;
+		}
+	}
+
+	public ArrayList<String> getNmostFrequentTokens(int n) {
+		Pair[] pairs = new Pair[wordToId.size()];
+		
+		for (int i = 0; i < wordToId.size(); i++) {
+			pairs[i]=new Pair(i, frequencyTable[i]);
+		}
+		
+		ArrayList<String> topNTokens = new ArrayList<String>();
+
+		Arrays.sort(pairs);
+		for (int i = 0; i < Math.min(n, wordToId.size()); i++) {
+			topNTokens.add(translate(pairs[i].index));
+		}
+		return topNTokens;
+	}
+
+	public static void main(String[] args) throws IOException {
+		ArrayList<String> testTokens = new ArrayList<String>();
+
+		final int testSize = 1500;
+		for (int i = 1; i <= testSize; i++) {
+			for (int j = 1; j <= i; j++) {
+				testTokens.add(Integer.toString(i));
+			}
+			testTokens.add("\n");
+		}
+		Collections.shuffle(testTokens);
+		testTokens.add("\n");
+		
+		FileWriter fstream = new FileWriter("unigramTest.txt");
+		BufferedWriter out = new BufferedWriter(fstream);
+		for (int i = 0; i < testTokens.size() - 1; i++) {
+			String token = testTokens.get(i);
+			String nextToken = testTokens.get(i + 1);
+			out.write(token);
+			if (!nextToken.equals("\n") && !token.equals("\n")) {
+				out.write("\t");
+			}
+		}
+		out.close();
+
+		Parser test = new Parser();
+		test.parseUnlabeledFile("unigramTest.txt");
+
+		UnigramFreqs testFreq = new UnigramFreqs();
+		testFreq.addCorpus(test.getCorpus());
+		ArrayList<String> resultList = testFreq.getNmostFrequentTokens(testSize+1);
+		for (int i = 0; i < resultList.size(); i++) {
+			String token = resultList.get(i);
+			if (i == 0) {
+				assert (testFreq.getFrequency(token) > testSize) : "Fehler bei <BOUNDARY>";
+			} else {
+				assert (testFreq.getFrequency(token) == testSize - i + 1) : "Fehler bei Token " + token + " (i=" + i + ")!";
+				assert (testFreq.getFrequency(token) == Integer.parseInt(token));
+			}
+			
+		}
+		
+		int index = 0;
+		String[] vocabAsArray = testFreq.getVocabularyAsArray();
+		for (String word : testFreq.getVocabulary()) {
+			assert (vocabAsArray[index].equals(word)) : "Vokabularfehler bei " + word;
+			index++;
+		}
+			
+		
+		System.out.println("Test completed!");
+	}
+}

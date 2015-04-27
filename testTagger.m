@@ -1,0 +1,81 @@
+function [] = testTagger(targetDomain) %this is a function: testTagger, if no parameter, the default targetdomain will be emails
+javaaddpath('lfep.jar');
+import nlp.*;
+if ~exist('results', 'dir')
+    mkdir('results');
+end
+
+loadSettings;
+%parse four kinds of corpus: training data, test data,targetdomaindata,
+%sourcedomaindata
+trainingData = nlp.model.LabeledDataset();
+trainingData.parse(trainingFile);
+
+testData = nlp.model.LabeledDataset();
+testData.parse(testFile);
+
+targetDomainData = nlp.model.ThinDataset();
+targetDomainData.parse(lTargetData, ulTargetData);
+
+sourceDomainData = nlp.model.ThinDataset();
+sourceDomainData.parse([], ulSourceData); %parse unlabeled bigger data
+%add these data as unlabeled data, they have been sentence set after the
+%parsing.
+unlabeledData = nlp.model.UnlabeledDataset();
+%note that the final unlabeled data consists of training data, testdata,
+%targetdomaindata(ltargetdata&utargetdata), sourcedomain data. In the
+%loadsetting.m file, it uses unlabeled data to compute the distributional
+%feature. so, all the available data are used to compute distributional
+%feature.
+unlabeledData.add(trainingData);
+unlabeledData.add(testData);
+unlabeledData.add(targetDomainData);
+unlabeledData.add(sourceDomainData);
+
+myTagger = Tagger(unlabeledData, trainingData, wordFeatures);   
+
+[train_features, train_labels, train_tokens] = myTagger.getTrainingSet(ngram_size, no_of_ngrams); %ngram_size=5, no_of_ngram=1000
+[test_features, test_labels, test_tokens, test_oovIndices, test_sBoundaries] = myTagger.getTestSet(ngram_size, no_of_ngrams_test, testData);  
+
+
+%disp(test_features.values(821,:))
+
+
+
+
+
+
+Tagger.printFeatureVector(train_features,train_tokens,1);
+
+tagMap = myTagger.getLabelsToTagMap();
+%clear removes all variables from the current workspace, releasing them from system memory.
+clear myTagger testData targetDomainData sourceDomainData unlabeledData trainingData;
+if saveToFile
+    %store the specified variables to the file,
+    %sprintf('results/%s',targetDomain) returns a string as filename
+     save(sprintf('results/%s',targetDomain),'train_*','test_*','tagMap');
+end
+
+fprintf('No. of training examples: %d\n', size(train_features.values,1));
+display('Training SVM...');
+%train the model in svm,get the "model" finally
+model = train(train_labels,train_features.values,'-B 1');
+save(sprintf('results/%s.model',targetDomain),'model','tagMap');
+%compute the accuricy on training data
+[~,accuracy_train] = predict(train_labels, train_features.values ,model, '-q');
+%compute the accuricy on test data
+[predicted_labels,accuracy_test] = predict(test_labels,test_features.values,model,'-q');
+
+%disp(test_labels(821));
+%disp(predicted_labels(821));
+
+
+[oovAcc,oovCounts] = Tagger.unknownWordAccuracy(test_labels, predicted_labels,test_oovIndices);
+fprintf('Acc. on training set (all words): %f\n', accuracy_train(1));
+fprintf('Acc. on test set (all words): %f\n', accuracy_test(1));
+fprintf('Acc. on test set (unknown words): %f (%d / %d)\n', oovAcc*100, oovCounts.correct, oovCounts.total);
+fprintf('Unknown word baseline: %f\n\n', Tagger.majBaseline(test_labels(test_oovIndices)*100));
+
+Tagger.printErrors(tagMap, test_labels, predicted_labels,test_oovIndices, test_tokens, sprintf('results/%s.tagged',targetDomain),test_sBoundaries);
+
+end

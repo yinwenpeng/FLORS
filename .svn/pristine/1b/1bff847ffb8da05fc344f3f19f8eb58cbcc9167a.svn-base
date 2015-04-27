@@ -1,0 +1,111 @@
+package nlp.processing.features;
+
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.Map;
+import java.util.TreeMap;
+
+import nlp.model.Dataset;
+import nlp.processing.Features;
+import nlp.stats.UnigramFreqs;
+
+public class MorphFeatures extends Features {
+	protected HashMap<String, Integer> featureIndex = new HashMap<String, Integer>();
+
+	public MorphFeatures(Dataset data, int n) {
+		HashMap<String, Integer> suffixFrequencies = countSuffixes(data.getUnigrams());
+		this.featureIndex = getNMostFrequentSuffixes(suffixFrequencies, n);
+	}
+
+	public MorphFeatures(Dataset data) {
+		for (String token : data.getVocabulary())  {
+			for (int i = 0; i < token.length(); i++) {
+				String suffix = token.substring(i);
+				if (!featureIndex.containsKey(suffix))  {
+					featureIndex.put(suffix, featureIndex.size());
+				}
+			}
+		}
+	}
+
+	protected MorphFeatures() {
+	}
+
+	private HashMap<String, Integer> getNMostFrequentSuffixes(
+			HashMap<String, Integer> suffixFrequencies, int n) {
+		Map<String, Integer> sortedTable = sortByValues(suffixFrequencies);
+		HashMap<String, Integer> topNTokens = new HashMap<String, Integer>();
+
+		Iterator<String> it = sortedTable.keySet().iterator();
+		int i = 0;
+		while (it.hasNext() && topNTokens.size() < n) {
+			topNTokens.put(it.next(), i++);
+		}
+		return topNTokens;
+	}
+
+	public static <K, V extends Comparable<V>> Map<K, V> sortByValues(
+			final Map<K, V> map) {
+		Comparator<K> valueComparator = new Comparator<K>() {
+			public int compare(K k1, K k2) {
+				int compare = map.get(k2).compareTo(map.get(k1));
+				if (compare == 0)
+					return 1;
+				else
+					return compare;
+			}
+		};
+
+		Map<K, V> sortedByValues = new TreeMap<K, V>(valueComparator);
+		sortedByValues.putAll(map);
+		return sortedByValues;
+	}
+
+	private HashMap<String, Integer> countSuffixes(UnigramFreqs unigrams) {
+		HashMap<String, Integer> suffixFrequencies = new HashMap<String, Integer>();
+		for (String word : unigrams.getVocabulary()) {
+			for (int i = 0; i < word.length(); i++) {
+				incrementTable(suffixFrequencies, word.substring(i));
+			}
+		}
+
+		return suffixFrequencies;
+	}
+
+	private void incrementTable(HashMap<String, Integer> suffixFrequencies,
+			String suffix) {
+		Integer oldValue = 0;
+
+		if (suffixFrequencies.containsKey(suffix)) {
+			oldValue = suffixFrequencies.get(suffix);
+		}
+
+		suffixFrequencies.put(suffix, oldValue + 1);
+	}
+	
+	@Override
+	public String[][] getFeatureNames(String pos) {
+		String[][] out = new String[1][featureIndex.size()];
+		
+		for (String c : featureIndex.keySet()) {
+			out[0][featureIndex.get(c)] =  "{suf|" + pos + "}" + c;
+		}		
+		return out;
+	}
+
+	@Override
+	protected Vector[] getFeatureVector(String token) {
+		HashMap<Integer, Integer> result = new HashMap<Integer, Integer>();
+		for (int i = 0; i < token.length(); i++) {
+			String suffix = token.substring(i);
+
+			if (featureIndex.containsKey(suffix)) {
+				int index = featureIndex.get(suffix);
+				result.put(index, 1);
+			}
+		}
+
+		return toVector(result);
+	}
+}
